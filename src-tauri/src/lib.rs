@@ -3,20 +3,26 @@
 pub mod api;
 pub mod auth;
 pub mod commands;
+pub mod settings;
 pub mod types;
 pub mod web;
 
 use commands::{
-    add_account_from_file, cancel_login, check_codex_processes, complete_login, delete_account,
-    export_accounts_full_encrypted_file, export_accounts_slim_text, get_active_account_info,
-    get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
-    import_accounts_slim_text, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, set_masked_account_ids, start_login, switch_account, warmup_account,
+    add_account_from_file, cancel_login, check_codex_processes, clear_proxy_settings,
+    complete_login, delete_account, export_accounts_full_encrypted_file, export_accounts_slim_text,
+    get_active_account_info, get_masked_account_ids, get_proxy_settings, get_usage,
+    import_accounts_full_encrypted_file, import_accounts_slim_text, list_accounts,
+    refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
+    set_proxy_settings, start_login, switch_account, test_proxy_settings, warmup_account,
     warmup_all_accounts,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(err) = settings::apply_stored_proxy_environment() {
+        eprintln!("[Settings] Failed to apply stored proxy settings: {err}");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -42,6 +48,11 @@ pub fn run() {
             // Masked accounts
             get_masked_account_ids,
             set_masked_account_ids,
+            // Settings
+            get_proxy_settings,
+            set_proxy_settings,
+            clear_proxy_settings,
+            test_proxy_settings,
             // OAuth
             start_login,
             complete_login,

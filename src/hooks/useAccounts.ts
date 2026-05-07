@@ -170,8 +170,12 @@ export function useAccounts() {
   ) => {
     try {
       if (options?.refreshMetadata) {
-        await invokeBackend<AccountInfo>("refresh_account_metadata", { accountId });
-        await loadAccounts(true);
+        try {
+          await invokeBackend<AccountInfo>("refresh_account_metadata", { accountId });
+          await loadAccounts(true);
+        } catch (err) {
+          console.warn("Failed to refresh account metadata:", err);
+        }
       }
 
       setAccounts((prev) =>
@@ -197,9 +201,8 @@ export function useAccounts() {
                 usageLoading: false,
               }
             : a
-        )
+          )
       );
-      throw err;
     }
   }, [buildUsageError, loadAccounts]);
 

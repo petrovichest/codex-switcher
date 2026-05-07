@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
+use crate::settings::build_http_client;
 use crate::types::{
     AuthData, CreditStatusDetails, RateLimitDetails, RateLimitStatusPayload, RateLimitWindow,
     StoredAccount, UsageInfo,
@@ -225,7 +226,7 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
 }
 
 async fn warmup_with_api_key(api_key: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let payload = build_warmup_payload(false, true);
     let response = client
         .post(format!("{OPENAI_API}/responses"))
@@ -335,7 +336,7 @@ async fn send_chatgpt_get_request(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
     println!("[Usage] Requesting: {url}");
 
@@ -352,7 +353,7 @@ async fn send_chatgpt_warmup_request(
     chatgpt_account_id: Option<&str>,
     stream: bool,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
     let payload = build_warmup_payload(stream, false);
 

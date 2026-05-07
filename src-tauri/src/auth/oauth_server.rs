@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tiny_http::{Header, Request, Response, Server};
 use tokio::sync::oneshot;
 
+use crate::settings::build_http_client;
 use crate::types::{parse_chatgpt_id_token_claims, OAuthLoginInfo, StoredAccount};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
@@ -93,7 +94,7 @@ async fn exchange_code_for_tokens(
     pkce: &PkceCodes,
     code: &str,
 ) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
 
     let body = format!(
         "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",

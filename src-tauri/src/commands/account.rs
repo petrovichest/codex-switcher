@@ -5,6 +5,10 @@ use crate::auth::{
     import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
     save_accounts, set_active_account, switch_to_account, touch_account,
 };
+use crate::settings::{
+    load_settings as load_app_settings, replace_proxy_settings, validate_proxy_settings,
+    ProxySettings,
+};
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
 use anyhow::Context;
@@ -29,12 +33,14 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const SLIM_EXPORT_PREFIX: &str = "css1.";
-const SLIM_FORMAT_VERSION: u8 = 1;
+const SLIM_FORMAT_VERSION: u8 = 2;
+const SLIM_MIN_FORMAT_VERSION: u8 = 1;
 const SLIM_AUTH_API_KEY: u8 = 0;
 const SLIM_AUTH_CHATGPT: u8 = 1;
 
 const FULL_FILE_MAGIC: &[u8; 4] = b"CSWF";
 const FULL_FILE_VERSION: u8 = 1;
+const FULL_BACKUP_PAYLOAD_VERSION: u8 = 1;
 const FULL_SALT_LEN: usize = 16;
 const FULL_NONCE_LEN: usize = 24;
 const FULL_KDF_ITERATIONS: u32 = 210_000;
@@ -50,6 +56,8 @@ struct SlimPayload {
     version: u8,
     #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
     active_name: Option<String>,
+    #[serde(rename = "p", skip_serializing_if = "Option::is_none")]
+    proxy: Option<ProxySettings>,
     #[serde(rename = "c")]
     accounts: Vec<SlimAccountPayload>,
 }
@@ -64,6 +72,14 @@ struct SlimAccountPayload {
     api_key: Option<String>,
     #[serde(rename = "r", skip_serializing_if = "Option::is_none")]
     refresh_token: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FullBackupPayload {
+    version: u8,
+    accounts: AccountsStore,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy: Option<ProxySettings>,
 }
 
 /// List all accounts with their info
@@ -187,7 +203,8 @@ pub async fn rename_account(account_id: String, new_name: String) -> Result<(), 
 #[tauri::command]
 pub async fn export_accounts_slim_text() -> Result<String, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    encode_slim_payload_from_store(&store).map_err(|e| e.to_string())
+    let proxy = load_app_settings().map_err(|e| e.to_string())?.proxy;
+    encode_slim_payload_from_store(&store, proxy).map_err(|e| e.to_string())
 }
 
 /// Import minimal account config from a compact text string, skipping existing accounts.
@@ -195,6 +212,10 @@ pub async fn export_accounts_slim_text() -> Result<String, String> {
 pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccountsSummary, String> {
     let slim_payload = decode_slim_payload(&payload).map_err(|e| format!("{e:#}"))?;
     let total_in_payload = slim_payload.accounts.len();
+    let imported_proxy = slim_payload.proxy.clone();
+    if let Some(proxy) = imported_proxy.clone() {
+        replace_proxy_settings(Some(proxy)).map_err(|e| e.to_string())?;
+    }
 
     let current = load_accounts().map_err(|e| e.to_string())?;
     let existing_names: HashSet<String> = current.accounts.iter().map(|a| a.name.clone()).collect();
@@ -221,8 +242,9 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
 #[tauri::command]
 pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    let encrypted =
-        encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
+    let proxy = load_app_settings().map_err(|e| e.to_string())?.proxy;
+    let encrypted = encode_full_encrypted_store(&store, proxy, FULL_PRESET_PASSPHRASE)
+        .map_err(|e| e.to_string())?;
     write_encrypted_file(&path, &encrypted).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -230,7 +252,8 @@ pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), Str
 /// Export full account config as encrypted bytes for browser clients.
 pub async fn export_accounts_full_encrypted_bytes() -> Result<Vec<u8>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())
+    let proxy = load_app_settings().map_err(|e| e.to_string())?.proxy;
+    encode_full_encrypted_store(&store, proxy, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())
 }
 
 /// Import full account config from an encrypted file, skipping existing accounts.
@@ -239,13 +262,16 @@ pub async fn import_accounts_full_encrypted_file(
     path: String,
 ) -> Result<ImportAccountsSummary, String> {
     let encrypted = read_encrypted_file(&path).map_err(|e| e.to_string())?;
-    let imported = decode_full_encrypted_store(&encrypted, FULL_PRESET_PASSPHRASE)
+    let imported = decode_full_encrypted_backup(&encrypted, FULL_PRESET_PASSPHRASE)
         .map_err(|e| e.to_string())?;
-    validate_imported_store(&imported).map_err(|e| e.to_string())?;
+    validate_imported_store(&imported.accounts).map_err(|e| e.to_string())?;
 
     let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
+    let (merged, summary) = merge_accounts_store(current, imported.accounts);
     save_accounts(&merged).map_err(|e| e.to_string())?;
+    if let Some(proxy) = imported.proxy {
+        replace_proxy_settings(Some(proxy)).map_err(|e| e.to_string())?;
+    }
     Ok(summary)
 }
 
@@ -254,12 +280,15 @@ pub async fn import_accounts_full_encrypted_bytes(
     bytes: Vec<u8>,
 ) -> Result<ImportAccountsSummary, String> {
     let imported =
-        decode_full_encrypted_store(&bytes, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
-    validate_imported_store(&imported).map_err(|e| e.to_string())?;
+        decode_full_encrypted_backup(&bytes, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
+    validate_imported_store(&imported.accounts).map_err(|e| e.to_string())?;
 
     let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
+    let (merged, summary) = merge_accounts_store(current, imported.accounts);
     save_accounts(&merged).map_err(|e| e.to_string())?;
+    if let Some(proxy) = imported.proxy {
+        replace_proxy_settings(Some(proxy)).map_err(|e| e.to_string())?;
+    }
     Ok(summary)
 }
 
@@ -328,7 +357,10 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
     Ok(pids)
 }
 
-fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<String> {
+fn encode_slim_payload_from_store(
+    store: &AccountsStore,
+    proxy: Option<ProxySettings>,
+) -> anyhow::Result<String> {
     let active_name = store.active_account_id.as_ref().and_then(|active_id| {
         store
             .accounts
@@ -359,6 +391,7 @@ fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<Strin
     let payload = SlimPayload {
         version: SLIM_FORMAT_VERSION,
         active_name,
+        proxy,
         accounts: slim_accounts,
     };
 
@@ -396,7 +429,7 @@ fn decode_slim_payload(payload: &str) -> anyhow::Result<SlimPayload> {
 }
 
 fn validate_slim_payload(payload: &SlimPayload) -> anyhow::Result<()> {
-    if payload.version != SLIM_FORMAT_VERSION {
+    if !(SLIM_MIN_FORMAT_VERSION..=SLIM_FORMAT_VERSION).contains(&payload.version) {
         anyhow::bail!("Unsupported slim payload version: {}", payload.version);
     }
 
@@ -447,6 +480,10 @@ fn validate_slim_payload(payload: &SlimPayload) -> anyhow::Result<()> {
         if !names.contains(active_name) {
             anyhow::bail!("Slim import references missing active account: {active_name}");
         }
+    }
+
+    if let Some(proxy) = &payload.proxy {
+        validate_proxy_settings(proxy)?;
     }
 
     Ok(())
@@ -525,9 +562,22 @@ async fn restore_slim_accounts(
     Ok(restored)
 }
 
-fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyhow::Result<Vec<u8>> {
-    let json = serde_json::to_vec(store).context("Failed to serialize account store")?;
-    let compressed = compress_bytes(&json).context("Failed to compress account store")?;
+fn encode_full_encrypted_store(
+    store: &AccountsStore,
+    proxy: Option<ProxySettings>,
+    passphrase: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let payload = FullBackupPayload {
+        version: FULL_BACKUP_PAYLOAD_VERSION,
+        accounts: store.clone(),
+        proxy,
+    };
+    let json = serde_json::to_vec(&payload).context("Failed to serialize backup payload")?;
+    encode_full_encrypted_json(&json, passphrase)
+}
+
+fn encode_full_encrypted_json(json: &[u8], passphrase: &str) -> anyhow::Result<Vec<u8>> {
+    let compressed = compress_bytes(json).context("Failed to compress backup payload")?;
 
     let mut salt = [0u8; FULL_SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
@@ -551,10 +601,10 @@ fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyho
     Ok(out)
 }
 
-fn decode_full_encrypted_store(
+fn decode_full_encrypted_backup(
     file_bytes: &[u8],
     passphrase: &str,
-) -> anyhow::Result<AccountsStore> {
+) -> anyhow::Result<FullBackupPayload> {
     if file_bytes.len() as u64 > MAX_IMPORT_FILE_BYTES {
         anyhow::bail!("Encrypted file is too large");
     }
@@ -592,10 +642,30 @@ fn decode_full_encrypted_store(
     let json = decompress_bytes_with_limit(&compressed, MAX_IMPORT_JSON_BYTES)
         .context("Failed to decompress decrypted payload")?;
 
-    let store: AccountsStore =
-        serde_json::from_slice(&json).context("Failed to parse decrypted account payload")?;
+    let payload = match serde_json::from_slice::<FullBackupPayload>(&json) {
+        Ok(payload) => payload,
+        Err(_) => FullBackupPayload {
+            version: FULL_BACKUP_PAYLOAD_VERSION,
+            accounts: serde_json::from_slice(&json)
+                .context("Failed to parse decrypted account payload")?,
+            proxy: None,
+        },
+    };
 
-    Ok(store)
+    validate_full_backup_payload(&payload)?;
+    Ok(payload)
+}
+
+fn validate_full_backup_payload(payload: &FullBackupPayload) -> anyhow::Result<()> {
+    if payload.version != FULL_BACKUP_PAYLOAD_VERSION {
+        anyhow::bail!("Unsupported backup payload version: {}", payload.version);
+    }
+
+    if let Some(proxy) = &payload.proxy {
+        validate_proxy_settings(proxy)?;
+    }
+
+    Ok(())
 }
 
 fn derive_encryption_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
@@ -735,4 +805,87 @@ pub async fn get_masked_account_ids() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
     crate::auth::storage::set_masked_account_ids(ids).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compress_bytes, decode_full_encrypted_backup, decode_slim_payload,
+        encode_full_encrypted_json, encode_full_encrypted_store, encode_slim_payload_from_store,
+        FULL_PRESET_PASSPHRASE, SLIM_AUTH_API_KEY, SLIM_EXPORT_PREFIX,
+    };
+    use crate::settings::ProxySettings;
+    use crate::types::AccountsStore;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    fn test_proxy() -> ProxySettings {
+        ProxySettings {
+            enabled: true,
+            host: "192.0.2.10".to_string(),
+            port: 8000,
+            username: Some("user".to_string()),
+            password: Some("pass".to_string()),
+        }
+    }
+
+    #[test]
+    fn slim_backup_round_trips_structured_proxy_settings() {
+        let store = AccountsStore::default();
+        let proxy = test_proxy();
+
+        let encoded = encode_slim_payload_from_store(&store, Some(proxy.clone())).unwrap();
+        let decoded = decode_slim_payload(&encoded).unwrap();
+
+        assert_eq!(decoded.proxy, Some(proxy));
+    }
+
+    #[test]
+    fn slim_import_accepts_v1_payload_without_proxy() {
+        let payload = super::SlimPayload {
+            version: 1,
+            active_name: None,
+            proxy: None,
+            accounts: vec![super::SlimAccountPayload {
+                name: "api".to_string(),
+                auth_type: SLIM_AUTH_API_KEY,
+                api_key: Some("sk-test".to_string()),
+                refresh_token: None,
+            }],
+        };
+        let json = serde_json::to_vec(&payload).unwrap();
+        let compressed = compress_bytes(&json).unwrap();
+        let encoded = format!("{SLIM_EXPORT_PREFIX}{}", URL_SAFE_NO_PAD.encode(compressed));
+
+        let decoded = decode_slim_payload(&encoded).unwrap();
+
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.proxy, None);
+        assert_eq!(decoded.accounts.len(), 1);
+    }
+
+    #[test]
+    fn full_backup_round_trips_structured_proxy_settings() {
+        let store = AccountsStore::default();
+        let proxy = test_proxy();
+
+        let encrypted =
+            encode_full_encrypted_store(&store, Some(proxy.clone()), FULL_PRESET_PASSPHRASE)
+                .unwrap();
+        let decoded = decode_full_encrypted_backup(&encrypted, FULL_PRESET_PASSPHRASE).unwrap();
+
+        assert_eq!(decoded.accounts.accounts.len(), 0);
+        assert_eq!(decoded.proxy, Some(proxy));
+    }
+
+    #[test]
+    fn full_import_accepts_legacy_account_store_payload_without_proxy() {
+        let store = AccountsStore::default();
+        let json = serde_json::to_vec(&store).unwrap();
+        let encrypted = encode_full_encrypted_json(&json, FULL_PRESET_PASSPHRASE).unwrap();
+
+        let decoded = decode_full_encrypted_backup(&encrypted, FULL_PRESET_PASSPHRASE).unwrap();
+
+        assert_eq!(decoded.accounts.accounts.len(), 0);
+        assert_eq!(decoded.proxy, None);
+    }
 }

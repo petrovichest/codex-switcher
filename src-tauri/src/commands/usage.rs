@@ -4,8 +4,12 @@ use crate::api::usage::{
     fetch_chatgpt_account_metadata, get_account_usage, refresh_all_usage,
     warmup_account as send_warmup,
 };
-use crate::auth::{get_account, load_accounts, refresh_chatgpt_tokens, update_account_metadata};
+use crate::auth::{
+    ensure_chatgpt_tokens_fresh, get_account, load_accounts, refresh_chatgpt_tokens,
+    update_account_metadata,
+};
 use crate::types::{AccountInfo, AuthData, UsageInfo, WarmupSummary};
+use anyhow::Error as AnyhowError;
 use futures::{stream, StreamExt};
 
 /// Get usage info for a specific account
@@ -18,8 +22,9 @@ pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
     get_account_usage(&account).await.map_err(|e| e.to_string())
 }
 
-/// Force-refresh account metadata for a specific account.
-/// For ChatGPT accounts this refreshes OAuth tokens and pulls live subscription metadata.
+/// Refresh account metadata for a specific account.
+/// For ChatGPT accounts this only refreshes OAuth tokens when they are expired
+/// or when the metadata endpoint rejects the current access token.
 /// For API key accounts this is a no-op.
 #[tauri::command]
 pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo, String> {
@@ -30,12 +35,21 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
     let updated = match &account.auth_data {
         AuthData::ApiKey { .. } => account,
         AuthData::ChatGPT { .. } => {
-            let refreshed = refresh_chatgpt_tokens(&account)
+            let fresh_account = ensure_chatgpt_tokens_fresh(&account)
                 .await
                 .map_err(|e| e.to_string())?;
-            let live_metadata = fetch_chatgpt_account_metadata(&refreshed)
-                .await
-                .map_err(|e| e.to_string())?;
+            let live_metadata = match fetch_chatgpt_account_metadata(&fresh_account).await {
+                Ok(metadata) => metadata,
+                Err(err) if is_unauthorized_error(&err) => {
+                    let refreshed = refresh_chatgpt_tokens(&fresh_account)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    fetch_chatgpt_account_metadata(&refreshed)
+                        .await
+                        .map_err(|e| e.to_string())?
+                }
+                Err(err) => return Err(err.to_string()),
+            };
 
             update_account_metadata(
                 &account_id,
@@ -51,6 +65,11 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
     Ok(AccountInfo::from_stored(&updated, active_id))
+}
+
+fn is_unauthorized_error(err: &AnyhowError) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("401 Unauthorized"))
 }
 
 /// Refresh usage info for all accounts
@@ -98,4 +117,25 @@ pub async fn warmup_all_accounts() -> Result<WarmupSummary, String> {
         warmed_accounts,
         failed_account_ids,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unauthorized_error;
+
+    #[test]
+    fn detects_unauthorized_metadata_error() {
+        let err = anyhow::anyhow!(
+            "Accounts check API error: 401 Unauthorized - {{\"error\":\"expired\"}}"
+        );
+
+        assert!(is_unauthorized_error(&err));
+    }
+
+    #[test]
+    fn ignores_non_unauthorized_metadata_error() {
+        let err = anyhow::anyhow!("Accounts check API error: 500 Internal Server Error");
+
+        assert!(!is_unauthorized_error(&err));
+    }
 }

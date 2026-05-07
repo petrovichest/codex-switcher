@@ -11,11 +11,12 @@ use tokio::runtime::Runtime;
 
 use crate::commands::{
     add_account_from_auth_json_text, add_account_from_file, cancel_login, check_codex_processes,
-    complete_login, delete_account, export_accounts_full_encrypted_bytes,
-    export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
-    import_accounts_full_encrypted_bytes, import_accounts_slim_text, list_accounts,
+    clear_proxy_settings, complete_login, delete_account, export_accounts_full_encrypted_bytes,
+    export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_proxy_settings,
+    get_usage, import_accounts_full_encrypted_bytes, import_accounts_slim_text, list_accounts,
     refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    start_login, switch_account, warmup_account, warmup_all_accounts,
+    set_proxy_settings, start_login, switch_account, test_proxy_settings, warmup_account,
+    warmup_all_accounts,
 };
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +69,17 @@ struct UploadEncryptedArgs {
 struct FileImportArgs {
     path: String,
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProxySettingsArgs {
+    proxy: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestProxySettingsArgs {
+    proxy: Option<String>,
 }
 
 pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
@@ -189,6 +201,16 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "set_masked_account_ids" => {
             let args: MaskedIdsArgs = parse_args(payload)?;
             to_json(set_masked_account_ids(args.ids).await?)
+        }
+        "get_proxy_settings" => to_json(get_proxy_settings().await?),
+        "set_proxy_settings" => {
+            let args: ProxySettingsArgs = parse_args(payload)?;
+            to_json(set_proxy_settings(args.proxy, args.enabled).await?)
+        }
+        "clear_proxy_settings" => to_json(clear_proxy_settings().await?),
+        "test_proxy_settings" => {
+            let args: TestProxySettingsArgs = parse_args(payload)?;
+            to_json(test_proxy_settings(args.proxy).await?)
         }
         "check_codex_processes" => to_json(check_codex_processes().await?),
         _ => Err(format!("Unsupported web command: {command}")),

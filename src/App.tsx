@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
-import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
+import { AccountCard, AddAccountModal, ProxySettingsModal, UpdateChecker } from "./components";
 import type { CodexProcessInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -42,6 +42,7 @@ function App() {
   } = useAccounts();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isProxySettingsOpen, setIsProxySettingsOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [configModalMode, setConfigModalMode] = useState<"slim_export" | "slim_import">(
     "slim_export"
@@ -658,6 +659,15 @@ function App() {
                     <button
                       onClick={() => {
                         setIsActionsMenuOpen(false);
+                        setIsProxySettingsOpen(true);
+                      }}
+                      className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      Proxy Settings
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsActionsMenuOpen(false);
                         void handleExportSlimText();
                       }}
                       disabled={isExportingSlim}
@@ -881,6 +891,12 @@ function App() {
         onCancelOAuth={cancelOAuthLogin}
       />
 
+      <ProxySettingsModal
+        isOpen={isProxySettingsOpen}
+        onClose={() => setIsProxySettingsOpen(false)}
+        onToast={showWarmupToast}
+      />
+
       {/* Import/Export Config Modal */}
       {isConfigModalOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -899,11 +915,12 @@ function App() {
             <div className="p-5 space-y-4">
               {configModalMode === "slim_import" ? (
                 <p className="text-sm text-amber-700 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-2">
-                  Existing accounts are kept. Only missing accounts are imported.
+                  Existing accounts are kept. Only missing accounts are imported. Included proxy
+                  settings will replace the current proxy.
                 </p>
               ) : (
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  This slim string contains account secrets. Keep it private.
+                  This slim string contains account and proxy secrets. Keep it private.
                 </p>
               )}
               <textarea

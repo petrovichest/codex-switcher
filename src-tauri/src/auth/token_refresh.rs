@@ -3,14 +3,18 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
-use tokio::time::{sleep, Duration};
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
-use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens};
+use super::{get_account, load_accounts, switch_to_account, update_account_chatgpt_tokens};
+use crate::settings::build_http_client;
 use crate::types::{parse_chatgpt_id_token_claims, AuthData, StoredAccount};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const EXPIRY_SKEW_SECONDS: i64 = 60;
+
+static TOKEN_REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, serde::Deserialize)]
 struct RefreshTokenResponse {
@@ -42,18 +46,45 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
 
 /// Force-refresh ChatGPT OAuth tokens for an account.
 pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAccount> {
-    let (current_id_token, current_refresh_token, current_account_id) = match &account.auth_data {
+    let original_refresh_token = match &account.auth_data {
         AuthData::ApiKey { .. } => return Ok(account.clone()),
-        AuthData::ChatGPT {
-            id_token,
-            refresh_token,
-            account_id,
-            ..
-        } => (id_token.clone(), refresh_token.clone(), account_id.clone()),
+        AuthData::ChatGPT { refresh_token, .. } => refresh_token.clone(),
     };
+
+    if original_refresh_token.is_empty() {
+        anyhow::bail!("Missing refresh token for account {}", account.name);
+    }
+
+    let _guard = token_refresh_lock().lock().await;
+    let account = get_account(&account.id)?.unwrap_or_else(|| account.clone());
+    let (current_id_token, current_access_token, current_refresh_token, current_account_id) =
+        match &account.auth_data {
+            AuthData::ApiKey { .. } => return Ok(account.clone()),
+            AuthData::ChatGPT {
+                id_token,
+                access_token,
+                refresh_token,
+                account_id,
+            } => (
+                id_token.clone(),
+                access_token.clone(),
+                refresh_token.clone(),
+                account_id.clone(),
+            ),
+        };
 
     if current_refresh_token.is_empty() {
         anyhow::bail!("Missing refresh token for account {}", account.name);
+    }
+
+    if current_refresh_token != original_refresh_token
+        && !token_expired_or_near_expiry(&current_access_token)
+    {
+        println!(
+            "[Auth] Account {} was already refreshed by another request",
+            account.name
+        );
+        return Ok(account);
     }
 
     let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
@@ -138,44 +169,20 @@ fn parse_jwt_exp(token: &str) -> Option<i64> {
 }
 
 async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<RefreshTokenResponse> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
         urlencoding::encode(refresh_token),
         urlencoding::encode(CLIENT_ID),
     );
 
-    let mut last_send_error = None;
-    let mut response = None;
-
-    for attempt in 1..=3u8 {
-        match client
-            .post(format!("{DEFAULT_ISSUER}/oauth/token"))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.clone())
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                response = Some(resp);
-                break;
-            }
-            Err(err) => {
-                last_send_error = Some(err);
-                if attempt < 3 {
-                    sleep(Duration::from_millis(250 * u64::from(attempt))).await;
-                }
-            }
-        }
-    }
-
-    let response = match response {
-        Some(resp) => resp,
-        None => {
-            let err = last_send_error.context("Failed to send token refresh request")?;
-            return Err(err.into());
-        }
-    };
+    let response = client
+        .post(format!("{DEFAULT_ISSUER}/oauth/token"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("Failed to send token refresh request")?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -187,4 +194,8 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
         .json::<RefreshTokenResponse>()
         .await
         .context("Failed to parse token refresh response")
+}
+
+fn token_refresh_lock() -> &'static Mutex<()> {
+    TOKEN_REFRESH_LOCK.get_or_init(|| Mutex::new(()))
 }
