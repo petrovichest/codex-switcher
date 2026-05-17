@@ -9,12 +9,34 @@
   Easily switch between accounts, monitor usage limits, and stay in control of your quota
 </p>
 
+## About This Fork
+
+This repository is a downstream fork of the original
+[Lampese/codex-switcher](https://github.com/Lampese/codex-switcher) project.
+
+The goal of this fork is to keep the original multi-account workflow while
+adding features that make the app more practical for restricted networks,
+headless/remote setups, and newer ChatGPT login flows.
+
+Notable additions in this fork:
+
+- Configurable HTTP proxy support for ChatGPT/OpenAI requests
+- ChatGPT device-code login as an alternative to browser OAuth
+- Proxy-aware device login, token refresh, usage checks, and warm-up requests
+- LAN/browser dashboard mode through the `codex-web` helper
+- Masked accounts for hiding selected accounts from the main list
+- Full encrypted account backup/import and slim text export/import
+- Subscription expiry tracking in ChatGPT account metadata
+
 ## Features
 
 - **Multi-Account Management** – Add and manage multiple Codex accounts in one place
 - **Quick Switching** – Switch between accounts with a single click
 - **Usage Monitoring** – View real-time usage for both 5-hour and weekly limits
-- **Dual Login Mode** – OAuth authentication or import existing `auth.json` files
+- **Multiple Login Modes** – Browser OAuth, ChatGPT device-code login, or import existing `auth.json` files
+- **Proxy Settings** – Configure an HTTP proxy for auth, usage, warm-up, and token refresh requests
+- **Backup and Import** – Export/import slim text payloads or full encrypted backups
+- **LAN Dashboard** – Run the same dashboard in a browser through the bundled web helper
 
 ## Installation
 
@@ -28,7 +50,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/Lampese/codex-switcher.git
+git clone https://github.com/petrovichest/codex-switcher.git
 cd codex-switcher
 
 # Install dependencies
