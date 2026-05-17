@@ -11,6 +11,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use tokio::sync::oneshot;
 
 use super::oauth_server::{exchange_code_for_tokens, PkceCodes};
+use crate::settings::build_http_client;
 use crate::types::{parse_chatgpt_id_token_claims, DeviceLoginInfo, StoredAccount};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
@@ -191,7 +192,7 @@ async fn complete_device_code_login(
     device_code: DeviceCode,
     cancelled: Arc<AtomicBool>,
 ) -> Result<DeviceLoginResult> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let code_response = poll_for_authorization_code(&client, &device_code, &cancelled).await?;
     let pkce = PkceCodes {
         code_verifier: code_response.code_verifier,
@@ -230,7 +231,7 @@ pub async fn start_device_code_login(
     oneshot::Receiver<Result<DeviceLoginResult>>,
     Arc<AtomicBool>,
 )> {
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let device_code = request_user_code(&client).await?;
     let login_info = DeviceLoginInfo {
         verification_url: device_code.verification_url.clone(),
