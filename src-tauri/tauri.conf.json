@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJGRDUzMThCRERDMzgwRjAKUldUd2dNUGRpekhWTDJrakh4SEN0TTRpYi90WlZjV0wyTko2UTg1UUhCS01sdE1kL1BpUjJGSzQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBFMEQ0NUZENENDMkI1RkQKUldUOXRjSk0vVVVORHVTQlhMdUIreE5CcUJlTGg3S2N2K2lKUWdkR0pNZlc4QzBQZDhVOU1MbW0K",
       "endpoints": [
         "https://github.com/petrovichest/codex-switcher/releases/latest/download/latest.json"
       ]
