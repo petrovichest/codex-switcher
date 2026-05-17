@@ -11,12 +11,12 @@ use tokio::runtime::Runtime;
 
 use crate::commands::{
     add_account_from_auth_json_text, add_account_from_file, cancel_login, check_codex_processes,
-    clear_proxy_settings, complete_login, delete_account, export_accounts_full_encrypted_bytes,
-    export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_proxy_settings,
-    get_usage, import_accounts_full_encrypted_bytes, import_accounts_slim_text, list_accounts,
-    refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    set_proxy_settings, start_login, switch_account, test_proxy_settings, warmup_account,
-    warmup_all_accounts,
+    clear_proxy_settings, complete_device_login, complete_login, delete_account,
+    export_accounts_full_encrypted_bytes, export_accounts_slim_text, get_active_account_info,
+    get_masked_account_ids, get_proxy_settings, get_usage, import_accounts_full_encrypted_bytes,
+    import_accounts_slim_text, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
+    rename_account, set_masked_account_ids, set_proxy_settings, start_device_login, start_login,
+    switch_account, test_proxy_settings, warmup_account, warmup_all_accounts,
 };
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +180,11 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             to_json(start_login(args.account_name).await?)
         }
         "complete_login" => to_json(complete_login().await?),
+        "start_device_login" => {
+            let args: LoginArgs = parse_args(payload)?;
+            to_json(start_device_login(args.account_name).await?)
+        }
+        "complete_device_login" => to_json(complete_device_login().await?),
         "cancel_login" => to_json(cancel_login().await?),
         "export_accounts_slim_text" => to_json(export_accounts_slim_text().await?),
         "import_accounts_slim_text" => {
